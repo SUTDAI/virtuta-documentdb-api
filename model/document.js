@@ -8,7 +8,8 @@ const documentSchema = new mongoose.Schema({
   name: { type: String, required: true },
   size: { type: Number, required: true },
   data: { type: Buffer, required: true }, // BSON data field
-  contentType: { type: String } // Optional content type
+  contentType: { type: String },
+  metadata: { type: Object }
 });
 
 const Document = mongoose.model('Document', documentSchema);
@@ -24,7 +25,8 @@ router.post('/', upload.single('file'), async (req, res) => {
     await Document.create({
       name: req.file.originalname,
       size: req.file.size,
-      data: req.file.buffer
+      data: req.file.buffer,
+      metadata: req.body.metadata
     });
       res.json({ message: 'Documents uploaded successfully' });
   } catch (err) {
@@ -55,6 +57,32 @@ router.get('/:id', async (req, res) => {
     res.status(500).send('Error retrieving or downloading document');
   }
 });
+
+router.get('/:id/data', async (req, res) => {
+  try {
+    const document = await Document.findById(req.params.id);
+    if (!document) {
+      return res.status(404).send('Document not found');
+    }
+
+    const pdfBuffer = document.data;
+    if (!pdfBuffer) {
+      return res.status(404).send('PDF data not found in document');
+    }
+
+    const responseData = {
+      metadata: document.metadata,
+      data: pdfBuffer
+    };
+
+    res.setHeader('Content-Type', 'application/json');
+    res.json(responseData);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Error retrieving or downloading document');
+  }
+});
+
 
 router.delete('/:id', async (req, res) => {
   try {
