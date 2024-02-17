@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const AutoIncrement = require('mongoose-sequence')(mongoose);
 const express = require("express");
 const multer = require("multer");
 const PDFServicesSdk = require("@adobe/pdfservices-node-sdk");
@@ -178,18 +179,27 @@ async function extractAndParseJsonFromZip(zipFilePath) {
       }
     });
     console.log("Extracted Data parsed into text");
+
+    try {
+      await fs.promises.unlink(zipFilePath);
+      console.log("Temporary zip file deleted successfully");
+    } catch (err) {
+      console.log("Error deleting temporary zip file", err);
+    }
+
     return string_text;
   } catch (err) {
     console.log(err.errors);
   }
 }
 
-async function vector_embed(text_content) {
+async function vector_embed(text_content, uploadedDocumentId) {
+  const doc_id = String(uploadedDocumentId);
   try {
     const response = await fetch(vector_embed_endpoint, {
       method: "POST",
       body: JSON.stringify({
-        doc_id: "2",
+        doc_id: doc_id,
         ds_id: "00000000-0000-0000-0000-000000000000",
         content: text_content,
         override: true,
@@ -211,11 +221,13 @@ async function vector_embed(text_content) {
 
 const documentSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  size: { type: Number, required: true },
-  data: { type: Buffer, required: true }, // BSON data field
+  size: { type: Number, required: true},
+  data: { type: Buffer, required: true },
   contentType: { type: String },
   metadata: { type: Object },
 });
+
+documentSchema.plugin(AutoIncrement, { inc_field: 'id'});
 
 const Document = mongoose.model("Document", documentSchema);
 
@@ -235,11 +247,15 @@ router.post("/", upload.single("file"), async (req, res) => {
       metadata: req.body.metadata,
     };
 
-    const data = await parsetextPDF(document_data.name);
-    await vector_embed(data).then(Document.create(document_data));
+    const uploadedDocument = await Document.create(document_data);
+    const uploadedDocumentId = uploadedDocument.id;
+
+    const data = await parsetextPDF(uploadedDocument.name);
+    await vector_embed(data, uploadedDocumentId);
 
     res.json({
       message: "Documents uploaded successfully",
+      documentId: uploadedDocumentId
     });
   } catch (err) {
     console.log(err.errors);
@@ -249,7 +265,7 @@ router.post("/", upload.single("file"), async (req, res) => {
 
 router.get("/:id", async (req, res) => {
   try {
-    const document = await Document.findById(req.params.id);
+    const document = await Document.findOne({ id: req.params.id });
     if (!document) {
       return res.status(404).send("Document not found");
     }
@@ -275,7 +291,7 @@ router.get("/:id", async (req, res) => {
 
 router.get("/:id/data", async (req, res) => {
   try {
-    const document = await Document.findById(req.params.id);
+    const document = await Document.findOne({ id: req.params.id });
     if (!document) {
       return res.status(404).send("Document not found");
     }
@@ -300,7 +316,7 @@ router.get("/:id/data", async (req, res) => {
 
 router.delete("/:id", async (req, res) => {
   try {
-    const document = await Document.findById(req.params.id);
+    const document = await Document.findOne({ id: req.params.id });
     if (!document) {
       return res.status(404).send("Document not found");
     }
@@ -312,4 +328,5 @@ router.delete("/:id", async (req, res) => {
     res.status(500).send("Error deleting document");
   }
 });
+
 module.exports = router;
