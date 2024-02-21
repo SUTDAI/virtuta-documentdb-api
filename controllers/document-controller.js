@@ -1,3 +1,4 @@
+//Declare required packages
 const mongoose = require("mongoose");
 const AutoIncrement = require('mongoose-sequence')(mongoose);
 const express = require("express");
@@ -164,7 +165,6 @@ async function parsetextPDF(filepath) {
   }
 }
 
-//TODO remove zip from tmp after extraction
 async function extractAndParseJsonFromZip(zipFilePath) {
   try {
     const zip = new AdmZip(zipFilePath);
@@ -180,6 +180,7 @@ async function extractAndParseJsonFromZip(zipFilePath) {
     });
     console.log("Extracted Data parsed into text");
 
+    // Removal of temporary zip file after extraction
     try {
       await fs.promises.unlink(zipFilePath);
       console.log("Temporary zip file deleted successfully");
@@ -215,71 +216,124 @@ async function vector_embed(text_content, uploadedDocumentId) {
     }
   } catch (error) {
     console.error("Error:", error);
-    // Handle the error here, such as logging or displaying a message to the user.
   }
 }
 
+// Defining the schema
 const documentSchema = new mongoose.Schema({
   name: { type: String, required: true },
   size: { type: Number, required: true},
-  data: { type: Buffer, required: true },
+  data: { type: Buffer, required: true }, // PDF Buffer data
   contentType: { type: String },
   metadata: { type: Object },
 });
 
+// Using mongoose-sequence library to implement auto id increment
 documentSchema.plugin(AutoIncrement, { inc_field: 'id'});
 
+// Creating 'Document' model using the schema
 const Document = mongoose.model("Document", documentSchema);
 
+// Setting up Multer storage using in-memory buffer for temp storage, will not be saved locally
 const storage = multer.memoryStorage();
 
+// Defining Multer middleware, using the memoryStorage to handle single file uploads
 const upload = multer({
   storage: storage,
 });
 
+
+// Defining POST route for Document upload
 router.post("/", upload.single("file"), async (req, res) => {
   try {
+
+    // Validation check to see if there is a file uploaded
+    if (!req.file) {
+      return res.status(400).json({ message: 'No file uploaded' });
+    }
+
+    // File validation checks
+    const errors = [];
+
+    const metadata = req.body.metadata;
+    const { originalname, size } = req.file;
+
+    if (!originalname) errors.push("File name is required");
+
+    if(metadata) {
+      if (typeof metadata !== 'object') {
+        errors.push('Metadata must be a valid JSON object');
+      }
+    } else{}
+
+    if (size > 1024 * 1024 * 16){
+      errors.push('File size exceeds 16MB limit')
+    }
+    if (!['application/pdf'].includes(req.file.mimetype)) {
+      errors.push("Invalid file type, only PDFs allowed");
+    }
+
+    if (errors.length > 0) {
+      throw new Error('Validation errors: ' + errors.join(', '));
+    }
+
+    // Creating object of document data
     const document_data = {
-      name: req.file.originalname,
-      filepath: req.file.filepath,
-      size: req.file.size,
+      name: originalname,
+      size: size,
       data: req.file.buffer,
-      metadata: req.body.metadata,
+      metadata: metadata,
     };
 
+    // Creating a new document in the database and getting the documentId
     const uploadedDocument = await Document.create(document_data);
     const uploadedDocumentId = uploadedDocument.id;
 
+    console.log("Document created successfully.")
+
+    // Calling the parsetextPDF function
     const data = await parsetextPDF(uploadedDocument.name);
+
+    // Calling the vector_embed function
     await vector_embed(data, uploadedDocumentId);
 
+    // Successful creation response with the documentId
     res.json({
       message: "Documents uploaded successfully",
       documentId: uploadedDocumentId
     });
   } catch (err) {
-    console.log(err.errors);
-    res.status(500).send("Error uploading documents");
+    console.error(err);
+
+    // Returning any errors during the validation check
+    if (err.name === 'ValidationError' || err.message.includes('Validation errors')) {
+      res.status(400).json({ message: err.message});
+    } else {
+      res.status(500).json({ message: 'Internal server error'}) // Other errors
+    }
   }
 });
 
+// Defining GET route for retrieval of PDF documents
 router.get("/:id", async (req, res) => {
   try {
+    // Find the document by its documentId
     const document = await Document.findOne({ id: req.params.id });
     if (!document) {
-      return res.status(404).send("Document not found");
+      return res.status(404).send("Document not found"); // Returns error if document is not found
     }
 
+    // Stores the buffer data in a variable
     const pdfBuffer = document.data;
 
     if (!pdfBuffer) {
-      return res.status(404).send("PDF data not found in document");
+      return res.status(404).send("PDF data not found in document"); // Returns error if there is no buffer data in the document
     }
 
-    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Type", "application/pdf"); // Sets the ContentType header to "application/pdf"
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename=${document.originalname}`
+      `attachment; filename=${document.originalname}` // Prompting a download of the file with the original name as the filename
     );
 
     res.send(pdfBuffer); // Directly send buffer data
@@ -314,18 +368,20 @@ router.get("/:id/data", async (req, res) => {
   }
 });
 
-router.delete("/:id", async (req, res) => {
+// Defining a DELETE route for document deletion
+router.delete('/:id', async (req, res) => {
   try {
-    const document = await Document.findOne({ id: req.params.id });
+    const document = await Document.findById(req.params.id);
     if (!document) {
-      return res.status(404).send("Document not found");
+      return res.status(404).send('Document not found'); // Returns error if document is not found
     }
 
     await Document.findByIdAndDelete(req.params.id);
     res.json({ message: `${document.name} deleted successfully` });
+    console.log ("Document deleted succesfully");
   } catch (err) {
     console.error(err);
-    res.status(500).send("Error deleting document");
+    res.status(500).send('Error deleting document');
   }
 });
 
